@@ -127,7 +127,6 @@ LZ4_compress_fast() :
 */
 int LZ4_compress_fast (const char* source, char* dest, int sourceSize, int maxDestSize, int acceleration);
 
-
 /*
 LZ4_compress_fast_extState() :
     Same compression function, just using an externally allocated memory space to store compression state.
@@ -151,7 +150,6 @@ LZ4_compress_destSize() :
               or 0 if compression fails
 */
 int LZ4_compress_destSize (const char* source, char* dest, int* sourceSizePtr, int targetDestSize);
-
 
 /*
 LZ4_decompress_fast() :

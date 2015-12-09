@@ -762,7 +762,7 @@ static unsigned long long LZ4IO_decodeLegacyStream(FILE* finput, FILE* foutput)
 
         /* Decode Block */
         decodeSize = LZ4_decompress_safe(in_buff, out_buff, blockSize, LEGACY_BLOCKSIZE);
-        if (decodeSize < 0) EXM_THROW(53, "Decoding Failed ! Corrupted input detected !");
+        if (decodeSize < 0) EXM_THROW(53, "Decoding Failed ! Corrupted input detected ! (%llu, %d)", filesize, decodeSize);
         filesize += decodeSize;
 
         /* Write Block */

@@ -43,9 +43,11 @@ LZ4DIR  := ../lib
 DESTDIR ?=
 PREFIX  ?= /usr/local
 CFLAGS  ?= -O3   # can select customized optimized flags such as for example : CFLAGS="-O2 -g" make
-CFLAGS  += -std=c99 -Wall -Wextra -Wundef -Wshadow -Wcast-qual -Wcast-align -Wstrict-prototypes -pedantic
+ALL_CFLAGS = -Wall -Wextra -Wundef -Wshadow -Wcast-qual -Wcast-align -Wstrict-prototypes -pedantic
+CFLAGS  += -std=c99 $(ALL_CFLAGS)
 CPPFLAGS:= -I$(LZ4DIR) -DXXH_NAMESPACE=LZ4_ -DLZ4_VERSION=\"$(RELEASE)\"
 FLAGS   := $(CFLAGS) $(CPPFLAGS) $(LDFLAGS)
+SGTEST_FLAGS := -std=gnu99 $(ALL_CFLAGS) $(CPPFLAGS) $(LDFLAGS)
 
 
 # Define *.exe as extension for Windows systems
@@ -71,7 +73,7 @@ bins: lz4 lz4c fullbench fuzzer frametest datagen
 
 all: bins m32
 
-lz4: $(LZ4DIR)/lz4.o $(LZ4DIR)/lz4hc.o $(LZ4DIR)/lz4frame.o $(LZ4DIR)/xxhash.o bench.o lz4io.o lz4cli.o
+lz4: $(LZ4DIR)/lz4.o $(LZ4DIR)/lz4hc.o $(LZ4DIR)/lz4frame.o $(LZ4DIR)/lz4sg.o $(LZ4DIR)/xxhash.o bench.o lz4io.o lz4cli.o
 	$(CC) $(FLAGS) $^ -o $@$(EXT)
 
 lz4c  : $(LZ4DIR)/lz4.o $(LZ4DIR)/lz4hc.o $(LZ4DIR)/lz4frame.o $(LZ4DIR)/xxhash.o bench.o lz4io.o lz4cli.o
@@ -80,10 +82,10 @@ lz4c  : $(LZ4DIR)/lz4.o $(LZ4DIR)/lz4hc.o $(LZ4DIR)/lz4frame.o $(LZ4DIR)/xxhash.
 lz4c32: $(LZ4DIR)/lz4.c $(LZ4DIR)/lz4hc.c $(LZ4DIR)/lz4frame.c $(LZ4DIR)/xxhash.c bench.c lz4io.c lz4cli.c
 	$(CC) -m32 $(FLAGS) -DENABLE_LZ4C_LEGACY_OPTIONS $^ -o $@$(EXT)
 
-fullbench  : $(LZ4DIR)/lz4.o $(LZ4DIR)/lz4hc.o $(LZ4DIR)/lz4frame.o $(LZ4DIR)/xxhash.o fullbench.c
+fullbench  : $(LZ4DIR)/lz4.o $(LZ4DIR)/lz4hc.o $(LZ4DIR)/lz4frame.o $(LZ4DIR)/lz4sg.o $(LZ4DIR)/xxhash.o fullbench.c
 	$(CC) $(FLAGS) $^ -o $@$(EXT)
 
-fullbench32: $(LZ4DIR)/lz4.c $(LZ4DIR)/lz4hc.c $(LZ4DIR)/lz4frame.c $(LZ4DIR)/xxhash.c fullbench.c
+fullbench32: $(LZ4DIR)/lz4.c $(LZ4DIR)/lz4hc.c $(LZ4DIR)/lz4frame.c $(LZ4DIR)/lz4sg.o $(LZ4DIR)/xxhash.c fullbench.c
 	$(CC) -m32 $(FLAGS) $^ -o $@$(EXT)
 
 fuzzer  : $(LZ4DIR)/lz4.o $(LZ4DIR)/lz4hc.o $(LZ4DIR)/xxhash.o fuzzer.c
@@ -98,6 +100,12 @@ frametest: $(LZ4DIR)/lz4frame.o $(LZ4DIR)/lz4.o $(LZ4DIR)/lz4hc.o $(LZ4DIR)/xxha
 frametest32: $(LZ4DIR)/lz4frame.c $(LZ4DIR)/lz4.c $(LZ4DIR)/lz4hc.c $(LZ4DIR)/xxhash.c frametest.c
 	$(CC) -m32 $(FLAGS) $^ -o $@$(EXT)
 
+sgtest: $(LZ4DIR)/lz4sg.o $(LZ4DIR)/lz4.o $(LZ4DIR)/lz4frame.o $(LZ4DIR)/lz4hc.o $(LZ4DIR)/xxhash.o sgtest.c
+	$(CC) $(SGTEST_FLAGS) $^ -o $@$(EXT) -lm
+
+sgtest32: $(LZ4DIR)/lz4sg.c $(LZ4DIR)/lz4.c $(LZ4DIR)/lz4frame.c $(LZ4DIR)/lz4hc.c $(LZ4DIR)/xxhash.c sgtest.c
+	$(CC) -m32 $(SGTEST_FLAGS) $^ -o $@$(EXT) -lm
+
 datagen : datagen.o datagencli.c
 	$(CC) $(FLAGS) $^ -o $@$(EXT)
 
@@ -108,6 +116,7 @@ clean:
         fullbench$(EXT) fullbench32$(EXT) \
         fuzzer$(EXT) fuzzer32$(EXT) \
         frametest$(EXT) frametest32$(EXT) \
+        sgtest$(EXT) sgtest32$(EXT) \
         datagen$(EXT)
 	@echo Cleaning completed
 
@@ -141,9 +150,9 @@ uninstall:
 	rm -f $(DESTDIR)$(MANDIR)/unlz4.1
 	@echo lz4 programs successfully uninstalled
 
-test: test-lz4 test-lz4c test-frametest test-fullbench test-fuzzer test-mem
+test: test-lz4 test-lz4c test-frametest test-sgtest test-fullbench test-fuzzer test-mem
 
-test32: test-lz4c32 test-frametest32 test-fullbench32 test-fuzzer32 test-mem32
+test32: test-lz4c32 test-frametest32 test-sgtest32 test-fullbench32 test-fuzzer32 test-mem32
 
 test-all: test test32
 
@@ -281,6 +290,12 @@ test-frametest: frametest
 test-frametest32: frametest32
 	./frametest32 $(FUZZER_TIME)
 
+test-sgtest: sgtest
+	./sgtest $(FUZZER_TIME)
+
+test-sgtest32: sgtest32
+	./sgtest32 $(FUZZER_TIME)
+
 test-mem: lz4 datagen fuzzer frametest fullbench
 	@echo "\n ---- valgrind tests : memory analyzer ----"
 	valgrind --leak-check=yes --error-exitcode=1 ./datagen -g50M > $(VOID)
@@ -299,6 +314,7 @@ test-mem: lz4 datagen fuzzer frametest fullbench
 	rm tmp*
 	valgrind --leak-check=yes --error-exitcode=1 ./fuzzer -i64 -t1
 	valgrind --leak-check=yes --error-exitcode=1 ./frametest -i256
+	valgrind --leak-check=yes --error-exitcode=1 ./sgtest -i256
 
 test-mem32: lz4c32 datagen
 # unfortunately, valgrind doesn't seem to work with non-native binary...

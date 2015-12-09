@@ -66,7 +66,7 @@ default: liblz4
 
 all: liblz4
 
-liblz4: lz4.c lz4hc.c lz4frame.c xxhash.c   # need to compile once with -fPIC, and once without -fPIC
+liblz4: lz4.c lz4hc.c lz4frame.c lz4sg.c xxhash.c   # need to compile once with -fPIC, and once without -fPIC
 	@echo compiling static library
 	@$(AR) rcs $@.a $^
 	@echo compiling dynamic library $(LIBVER)
@@ -102,6 +102,7 @@ install: liblz4 liblz4.pc
 	@install -m 644 lz4.h $(DESTDIR)$(INCLUDEDIR)/lz4.h
 	@install -m 644 lz4hc.h $(DESTDIR)$(INCLUDEDIR)/lz4hc.h
 	@install -m 644 lz4frame.h $(DESTDIR)$(INCLUDEDIR)/lz4frame.h
+	@install -m 644 lz4sg.h $(DESTDIR)$(INCLUDEDIR)/lz4sg.h
 	@echo lz4 static and shared libraries installed
 
 uninstall:
@@ -113,6 +114,7 @@ uninstall:
 	@[ -f $(DESTDIR)$(INCLUDEDIR)/lz4.h ] && rm -f $(DESTDIR)$(INCLUDEDIR)/lz4.h
 	@[ -f $(DESTDIR)$(INCLUDEDIR)/lz4hc.h ] && rm -f $(DESTDIR)$(INCLUDEDIR)/lz4hc.h
 	@[ -f $(DESTDIR)$(INCLUDEDIR)/lz4frame.h ] && rm -f $(DESTDIR)$(INCLUDEDIR)/lz4frame.h
+	@[ -f $(DESTDIR)$(INCLUDEDIR)/lz4sg.h ] && rm -f $(DESTDIR)$(INCLUDEDIR)/lz4sg.h
 	@echo lz4 libraries successfully uninstalled
 
 endif

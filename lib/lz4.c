@@ -32,6 +32,18 @@
    - LZ4 public forum : https://groups.google.com/forum/#!forum/lz4c
 */
 
+//#define DEBUG_LEVEL 1
+
+#ifdef DEBUG_LEVEL
+static int s_debug_level = DEBUG_LEVEL;
+
+#include <stdio.h>
+#define DBGLVL(level, ...) do {if (s_debug_level >= level) fprintf(stderr, ## __VA_ARGS__); } while(0)
+
+#else
+#define DBGLVL(...) do {} while(0)
+
+#endif
 
 /**************************************
 *  Tuning parameters
@@ -408,6 +420,22 @@ typedef enum { noDictIssue = 0, dictSmall } dictIssue_directive;
 
 typedef enum { endOnOutputSize = 0, endOnInputSize = 1 } endCondition_directive;
 typedef enum { full = 0, partial = 1 } earlyEnd_directive;
+typedef enum {
+    status_decompress_ok = 0,
+    /* errors */
+    status_decompress_empty_output_buffer = -1,
+    status_decompress_empty_input_buffer  = -2,
+    status_decompress_offset_beyond_limit = -3,
+    /* early end conditions */
+    status_decompress_output_overflow     = -20,
+    status_decompress_input_overflow      = -21,
+    status_decompress_write_beyond_output = -30,
+    status_decompress_read_beyond_input   = -31,
+    status_decompress_output_not_consumed = -40,
+    status_decompress_input_not_consumed  = -41,
+    status_decompress_output_ext_match_overflow = -50,
+    status_decompress_output_int_match_overflow = -51,
+} status_decompress;
 
 
 /**************************************
@@ -462,6 +490,7 @@ static void LZ4_putPositionOnHash(const BYTE* p, U32 h, void* tableBase, tableTy
 static void LZ4_putPosition(const BYTE* p, void* tableBase, tableType_t tableType, const BYTE* srcBase)
 {
     U32 h = LZ4_hashPosition(p, tableType);
+    DBGLVL(3, "%s h %08x\n", __FUNCTION__, h);
     LZ4_putPositionOnHash(p, h, tableBase, tableType, srcBase);
 }
 
@@ -514,6 +543,9 @@ FORCE_INLINE int LZ4_compress_generic(
     U32 forwardH;
     size_t refDelta=0;
 
+    DBGLVL(1, "\t%s line: %d targetDstSize %d inputSize %d outputLimited %d dict %d dictIssue %d\n",
+            __FUNCTION__, __LINE__, targetDstSize, inputSize, (int)outputLimited, (int)dict, (int)dictIssue);
+
     /* Init conditions */
     if ((outputLimited) && (unlikely(targetDstSize < 1))) return 0;    /* Impossible to store anything */
     if ((U32)inputSize > (U32)LZ4_MAX_INPUT_SIZE) return 0;   /* Unsupported input size, too large (or negative) */
@@ -544,6 +576,8 @@ FORCE_INLINE int LZ4_compress_generic(
     /* Main Loop */
     for ( ; ; )
     {
+        DBGLVL(2, "Main Loop, ");
+
         const BYTE* match;
         BYTE* token;
         {
@@ -558,9 +592,17 @@ FORCE_INLINE int LZ4_compress_generic(
                 forwardIp += step;
                 step = (searchMatchNb++ >> LZ4_skipTrigger);
 
-                if (unlikely(forwardIp > mflimit)) goto _last_literals;
+                if (unlikely(forwardIp > mflimit)) {
+                    DBGLVL(2, "\n\tline: %d Ioffset %d forward-ofs %d sMNb %u step %u \n",
+                            __LINE__, (int)((const char *)ip-source), (int)(forwardIp-ip), searchMatchNb, step);
+                    goto _last_literals;
+                }
 
                 match = LZ4_getPositionOnHash(h, ctx, tableType, base);
+
+                DBGLVL(3, "Find a match, ip %d forwardIp %d step %d h %08x base %p\n",
+                        (int) (((const char*)ip)-source), (int)(forwardIp-ip), step, h, base);
+
                 if (dict==usingExtDict)
                 {
                     if (match<(const BYTE*)source)
@@ -577,8 +619,12 @@ FORCE_INLINE int LZ4_compress_generic(
                 forwardH = LZ4_hashPosition(forwardIp, tableType);
                 LZ4_putPositionOnHash(ip, h, ctx, tableType, base);
 
+                DBGLVL(3, "update hash match %d lowRefLimit %d dictIssue %d tableType %d refDelta %zd\n",
+                        (int) (((const char*)(match+refDelta))-source),
+                        (int) (((const char*)lowRefLimit)-source), dictIssue, tableType, refDelta);
+
             } while ( ((dictIssue==dictSmall) ? (match < lowRefLimit) : 0)
-                || ((tableType==byU16) ? 0 : (match + MAX_DISTANCE < ip))
+                || ((tableType==byU16) ? 0 : ((match + MAX_DISTANCE < ip) || (match >= ip)))
                 || (LZ4_read32(match+refDelta) != LZ4_read32(ip)) );
         }
 
@@ -588,9 +634,14 @@ FORCE_INLINE int LZ4_compress_generic(
         {
             /* Encode Literal length */
             unsigned litLength = (unsigned)(ip - anchor);
+
+            DBGLVL(2, "litLength %d, ", litLength);
+
             token = op++;
             if ((outputLimited) && (unlikely(op + ((litLength+240)/255) + litLength > oMaxLit)))
             {
+                DBGLVL(2, "\n\tline: %d Ooffset %d litLength %u \n",
+                        __LINE__, (int)((const char *)op-dest), litLength);
                 /* Not enough space for a last match */
                 op--;
                 goto _last_literals;
@@ -611,8 +662,11 @@ FORCE_INLINE int LZ4_compress_generic(
 
 _next_match:
         /* Encode Offset */
+        DBGLVL(2, "Offset %d, ", (int)(ip-match));
+
         LZ4_writeLE16(op, (U16)(ip-match)); op+=2;
 
+        DBGLVL(2, "\nMatchLength %d %d\n", (int) (((const char*)ip)-source), (int) (((const char*)op)-dest));
         /* Encode MatchLength */
         {
             size_t matchLength;
@@ -624,6 +678,7 @@ _next_match:
                 limit = ip + (dictEnd-match);
                 if (limit > matchlimit) limit = matchlimit;
                 matchLength = LZ4_count(ip+MINMATCH, match+MINMATCH, limit);
+                DBGLVL(2, "ExtDict matchLength %zd, ", matchLength);
 
                 if ((outputLimited) && (unlikely(op + ((matchLength+240)/255) > oMaxMatch)))
                 {
@@ -644,6 +699,7 @@ _next_match:
             else
             {
                 matchLength = LZ4_count(ip+MINMATCH, match+MINMATCH, matchlimit);
+                DBGLVL(2, "matchLength %zd, ", matchLength);
 
                 if ((outputLimited) && (unlikely(op + ((matchLength+240)/255) > oMaxMatch)))
                 {
@@ -671,6 +727,7 @@ _next_match:
         if (ip > mflimit) break;
         if ((outputLimited) && (unlikely(op > oMaxSeq))) break;
 
+        DBGLVL(2, "EOL\n");
         /* Fill table */
         LZ4_putPosition(ip-2, ctx, tableType, base);
 
@@ -689,9 +746,10 @@ _next_match:
                 lowLimit = (const BYTE*)source;
             }
         }
+
         LZ4_putPosition(ip, ctx, tableType, base);
         if ( ((dictIssue==dictSmall) ? (match>=lowRefLimit) : 1)
-            && (match+MAX_DISTANCE>=ip)
+            && ((match+MAX_DISTANCE>=ip) && (match < ip))
             && (LZ4_read32(match+refDelta)==LZ4_read32(ip)) )
         { token=op++; *token=0; goto _next_match; }
 
@@ -703,6 +761,8 @@ _last_literals:
     /* Encode Last Literals */
     {
         size_t lastRun = (size_t)(iend - anchor);
+        DBGLVL(2, "\nEncode Last Literals (lastRun %i)\n", (int)lastRun);
+
         if ((outputLimited) && (unlikely(op + 1 /* token */ + ((lastRun+240)/255) /* litLength */ + lastRun /* literals */ > oend)))
         {
             /* adapt lastRun to fill 'dst' */
@@ -728,17 +788,23 @@ _last_literals:
 
     /* End */
     *srcSizePtr = (int) (((const char*)ip)-source);
+
+    DBGLVL(1, "\t%s line: %d inputSize %d outputSize %d\n",
+            __FUNCTION__, __LINE__, inputSize, (int) (((char*)op)-dest));
+
     return (int) (((char*)op)-dest);
 }
 
 int LZ4_compress_fast_extState(void* state, const char* source, char* dest, int srcSize, int maxOutputSize, int acceleration)
 {
+    DBGLVL(1, "%s srcSize %d maxOutputSize %d\n", __FUNCTION__, srcSize, maxOutputSize);
     int tempSrcSize = srcSize;
     int result = LZ4_compress_fast_destSize_extState(state, source, dest, &tempSrcSize, maxOutputSize, acceleration);
     return (tempSrcSize == srcSize) ? result : 0;
 }
 int LZ4_compress_fast_destSize_extState(void* state, const char* source, char* dest, int* srcSizePtr, int maxOutputSize, int acceleration)
 {
+    DBGLVL(1, "%s *srcSizePtr %d maxOutputSize %d\n", __FUNCTION__, *srcSizePtr, maxOutputSize);
     LZ4_resetStream((LZ4_stream_t*)state);
     if (acceleration < 1) acceleration = ACCELERATION_DEFAULT;
 
@@ -802,198 +868,6 @@ int LZ4_compress_fast_force(const char* source, char* dest, int inputSize, int m
 }
 
 
-/********************************
-*  destSize variant
-********************************/
-
-static int LZ4_compress_destSize_generic(
-                       void* const ctx,
-                 const char* const src,
-                       char* const dst,
-                       int*  const srcSizePtr,
-                 const int targetDstSize,
-                 const tableType_t tableType)
-{
-    const BYTE* ip = (const BYTE*) src;
-    const BYTE* base = (const BYTE*) src;
-    const BYTE* lowLimit = (const BYTE*) src;
-    const BYTE* anchor = ip;
-    const BYTE* const iend = ip + *srcSizePtr;
-    const BYTE* const mflimit = iend - MFLIMIT;
-    const BYTE* const matchlimit = iend - LASTLITERALS;
-
-    BYTE* op = (BYTE*) dst;
-    BYTE* const oend = op + targetDstSize;
-    BYTE* const oMaxLit = op + targetDstSize - 2 /* offset */ - 8 /* because 8+MINMATCH==MFLIMIT */ - 1 /* token */;
-    BYTE* const oMaxMatch = op + targetDstSize - (LASTLITERALS + 1 /* token */);
-    BYTE* const oMaxSeq = oMaxLit - 1 /* token */;
-
-    U32 forwardH;
-
-
-    /* Init conditions */
-    if (targetDstSize < 1) return 0;                                     /* Impossible to store anything */
-    if ((U32)*srcSizePtr > (U32)LZ4_MAX_INPUT_SIZE) return 0;            /* Unsupported input size, too large (or negative) */
-    if ((tableType == byU16) && (*srcSizePtr>=LZ4_64Klimit)) return 0;   /* Size too large (not within 64K limit) */
-    if (*srcSizePtr<LZ4_minLength) goto _last_literals;                  /* Input too small, no compression (all literals) */
-
-    /* First Byte */
-    *srcSizePtr = 0;
-    LZ4_putPosition(ip, ctx, tableType, base);
-    ip++; forwardH = LZ4_hashPosition(ip, tableType);
-
-    /* Main Loop */
-    for ( ; ; )
-    {
-        const BYTE* match;
-        BYTE* token;
-        {
-            const BYTE* forwardIp = ip;
-            unsigned step = 1;
-            unsigned searchMatchNb = 1 << LZ4_skipTrigger;
-
-            /* Find a match */
-            do {
-                U32 h = forwardH;
-                ip = forwardIp;
-                forwardIp += step;
-                step = (searchMatchNb++ >> LZ4_skipTrigger);
-
-                if (unlikely(forwardIp > mflimit))
-                    goto _last_literals;
-
-                match = LZ4_getPositionOnHash(h, ctx, tableType, base);
-                forwardH = LZ4_hashPosition(forwardIp, tableType);
-                LZ4_putPositionOnHash(ip, h, ctx, tableType, base);
-
-            } while ( ((tableType==byU16) ? 0 : (match + MAX_DISTANCE < ip))
-                || (LZ4_read32(match) != LZ4_read32(ip)) );
-        }
-
-        /* Catch up */
-        while ((ip>anchor) && (match > lowLimit) && (unlikely(ip[-1]==match[-1]))) { ip--; match--; }
-
-        {
-            /* Encode Literal length */
-            unsigned litLength = (unsigned)(ip - anchor);
-            token = op++;
-            if (op + ((litLength+240)/255) + litLength > oMaxLit)
-            {
-                /* Not enough space for a last match */
-                op--;
-                goto _last_literals;
-            }
-            if (litLength>=RUN_MASK)
-            {
-                unsigned len = litLength - RUN_MASK;
-                *token=(RUN_MASK<<ML_BITS);
-                for(; len >= 255 ; len-=255) *op++ = 255;
-                *op++ = (BYTE)len;
-            }
-            else *token = (BYTE)(litLength<<ML_BITS);
-
-            /* Copy Literals */
-            LZ4_wildCopy(op, anchor, op+litLength);
-            op += litLength;
-        }
-
-_next_match:
-        /* Encode Offset */
-        LZ4_writeLE16(op, (U16)(ip-match)); op+=2;
-
-        /* Encode MatchLength */
-        {
-            size_t matchLength;
-
-            matchLength = LZ4_count(ip+MINMATCH, match+MINMATCH, matchlimit);
-
-            if (op + ((matchLength+240)/255) > oMaxMatch)
-            {
-                /* Match description too long : reduce it */
-                matchLength = (15-1) + (oMaxMatch-op) * 255;
-            }
-            ip += MINMATCH + matchLength;
-
-            if (matchLength>=ML_MASK)
-            {
-                *token += ML_MASK;
-                matchLength -= ML_MASK;
-                while (matchLength >= 255) { matchLength-=255; *op++ = 255; }
-                *op++ = (BYTE)matchLength;
-            }
-            else *token += (BYTE)(matchLength);
-        }
-
-        anchor = ip;
-
-        /* Test end of block */
-        if (ip > mflimit) break;
-        if (op > oMaxSeq) break;
-
-        /* Fill table */
-        LZ4_putPosition(ip-2, ctx, tableType, base);
-
-        /* Test next position */
-        match = LZ4_getPosition(ip, ctx, tableType, base);
-        LZ4_putPosition(ip, ctx, tableType, base);
-        if ( (match+MAX_DISTANCE>=ip)
-            && (LZ4_read32(match)==LZ4_read32(ip)) )
-        { token=op++; *token=0; goto _next_match; }
-
-        /* Prepare next loop */
-        forwardH = LZ4_hashPosition(++ip, tableType);
-    }
-
-_last_literals:
-    /* Encode Last Literals */
-    {
-        size_t lastRunSize = (size_t)(iend - anchor);
-        if (op + 1 /* token */ + ((lastRunSize+240)/255) /* litLength */ + lastRunSize /* literals */ > oend)
-        {
-            /* adapt lastRunSize to fill 'dst' */
-            lastRunSize  = (oend-op) - 1;
-            lastRunSize -= (lastRunSize+240)/255;
-        }
-        ip = anchor + lastRunSize;
-
-        if (lastRunSize >= RUN_MASK)
-        {
-            size_t accumulator = lastRunSize - RUN_MASK;
-            *op++ = RUN_MASK << ML_BITS;
-            for(; accumulator >= 255 ; accumulator-=255) *op++ = 255;
-            *op++ = (BYTE) accumulator;
-        }
-        else
-        {
-            *op++ = (BYTE)(lastRunSize<<ML_BITS);
-        }
-        memcpy(op, anchor, lastRunSize);
-        op += lastRunSize;
-    }
-
-    /* End */
-    *srcSizePtr = (int) (((const char*)ip)-src);
-    return (int) (((char*)op)-dst);
-}
-
-
-static int LZ4_compress_destSize_extState (void* state, const char* src, char* dst, int* srcSizePtr, int targetDstSize)
-{
-    LZ4_resetStream((LZ4_stream_t*)state);
-
-    if (targetDstSize >= LZ4_compressBound(*srcSizePtr))   /* compression success is guaranteed */
-    {
-        return LZ4_compress_fast_extState(state, src, dst, *srcSizePtr, targetDstSize, 1);
-    }
-    else
-    {
-        if (*srcSizePtr < LZ4_64Klimit)
-            return LZ4_compress_destSize_generic(state, src, dst, srcSizePtr, targetDstSize, byU16);
-        else
-            return LZ4_compress_destSize_generic(state, src, dst, srcSizePtr, targetDstSize, LZ4_64bits() ? byU32 : byPtr);
-    }
-}
-
 
 int LZ4_compress_destSize(const char* src, char* dst, int* srcSizePtr, int targetDstSize)
 {
@@ -1004,7 +878,7 @@ int LZ4_compress_destSize(const char* src, char* dst, int* srcSizePtr, int targe
     void* ctx = &ctxBody;
 #endif
 
-    int result = LZ4_compress_destSize_extState(ctx, src, dst, srcSizePtr, targetDstSize);
+    int result = LZ4_compress_fast_destSize_extState(ctx, src, dst, srcSizePtr, targetDstSize, ACCELERATION_DEFAULT);
 
 #if (HEAPMODE)
     FREEMEM(ctx);
@@ -1078,6 +952,7 @@ static void LZ4_renormDictT(LZ4_stream_t_internal* LZ4_dict, const BYTE* src)
     if ((LZ4_dict->currentOffset > 0x80000000) ||
         ((size_t)LZ4_dict->currentOffset > (size_t)src))   /* address space overflow */
     {
+        DBGLVL(1, "\n   rescale hash table   \n");
         /* rescale hash table */
         U32 delta = LZ4_dict->currentOffset - 64 KB;
         const BYTE* dictEnd = LZ4_dict->dictionary + LZ4_dict->dictSize;
@@ -1098,6 +973,14 @@ int LZ4_compress_fast_continue (LZ4_stream_t* LZ4_stream, const char* source, ch
 {
     int tempSrcSize = srcSize;
     int result = LZ4_compress_fast_destSize_continue(LZ4_stream, source, dest, &tempSrcSize, maxOutputSize, acceleration);
+
+    int diff = srcSize - tempSrcSize;
+    if (diff) {
+        LZ4_stream_t_internal *lz4s_ctx = (LZ4_stream_t_internal *)LZ4_stream;
+        lz4s_ctx->dictSize      += diff;
+        lz4s_ctx->currentOffset += diff;
+    }
+
     return (tempSrcSize == srcSize) ? result : 0;
 }
 int LZ4_compress_fast_destSize_continue (LZ4_stream_t* LZ4_stream, const char* source, char* dest, int *srcSizePtr, int maxOutputSize, int acceleration)
@@ -1115,8 +998,10 @@ int LZ4_compress_fast_destSize_continue (LZ4_stream_t* LZ4_stream, const char* s
     /* Check overlapping input/dictionary space */
     {
         const BYTE* sourceEnd = (const BYTE*) source + inputSize;
+        DBGLVL(2, "\n source %p sourceEnd %p dictionary %p dictEnd %p", source, sourceEnd, streamPtr->dictionary, dictEnd);
         if ((sourceEnd > streamPtr->dictionary) && (sourceEnd < dictEnd))
         {
+            DBGLVL(1, "\n overlapping inputSize %d dictSize %d\n", inputSize, streamPtr->dictSize);
             streamPtr->dictSize = (U32)(dictEnd - sourceEnd);
             if (streamPtr->dictSize > 64 KB) streamPtr->dictSize = 64 KB;
             if (streamPtr->dictSize < 4) streamPtr->dictSize = 0;
@@ -1127,11 +1012,13 @@ int LZ4_compress_fast_destSize_continue (LZ4_stream_t* LZ4_stream, const char* s
     /* prefix mode : source data follows dictionary */
     if (dictEnd == (const BYTE*)source)
     {
+        DBGLVL(1, "\nprefix currentOffset %d dictSize %d source %p dest %p inputSize %d maxOutputSize %d\n", streamPtr->currentOffset, streamPtr->dictSize, source, dest, inputSize, maxOutputSize);
         int result;
         if ((streamPtr->dictSize < 64 KB) && (streamPtr->dictSize < streamPtr->currentOffset))
             result = LZ4_compress_generic(LZ4_stream, source, dest, srcSizePtr, maxOutputSize, limitedOutput, byU32, withPrefix64k, dictSmall, acceleration);
         else
             result = LZ4_compress_generic(LZ4_stream, source, dest, srcSizePtr, maxOutputSize, limitedOutput, byU32, withPrefix64k, noDictIssue, acceleration);
+        inputSize = *srcSizePtr;
         streamPtr->dictSize += (U32)inputSize;
         streamPtr->currentOffset += (U32)inputSize;
         return result;
@@ -1139,11 +1026,13 @@ int LZ4_compress_fast_destSize_continue (LZ4_stream_t* LZ4_stream, const char* s
 
     /* external dictionary mode */
     {
+        DBGLVL(1, "\nexternal currentOffset %d dictSize %d source %p dest %p\n", streamPtr->currentOffset, streamPtr->dictSize, source, dest);
         int result;
         if ((streamPtr->dictSize < 64 KB) && (streamPtr->dictSize < streamPtr->currentOffset))
             result = LZ4_compress_generic(LZ4_stream, source, dest, srcSizePtr, maxOutputSize, limitedOutput, byU32, usingExtDict, dictSmall, acceleration);
         else
             result = LZ4_compress_generic(LZ4_stream, source, dest, srcSizePtr, maxOutputSize, limitedOutput, byU32, usingExtDict, noDictIssue, acceleration);
+        inputSize = *srcSizePtr;
         streamPtr->dictionary = (const BYTE*)source;
         streamPtr->dictSize = (U32)inputSize;
         streamPtr->currentOffset += (U32)inputSize;
@@ -1202,44 +1091,60 @@ int LZ4_saveDict (LZ4_stream_t* LZ4_dict, char* safeBuffer, int dictSize)
  * Note that it is essential this generic function is really inlined,
  * in order to remove useless branches during compilation optimization.
  */
-FORCE_INLINE int LZ4_decompress_generic(
+FORCE_INLINE status_decompress LZ4_decompress_destSize_generic(
                  const char* const source,
                  char* const dest,
-                 int inputSize,
-                 int outputSize,         /* If endOnInput==endOnInputSize, this value is the max size of Output Buffer. */
 
-                 int endOnInput,         /* endOnOutputSize, endOnInputSize */
-                 int partialDecoding,    /* full, partial */
-                 int targetOutputSize,   /* only used if partialDecoding==partial */
+                 int* inputSizePtr,
+                 int* outputSizePtr,         /* If endOnInput==endOnInputSize, this value is the max size of Output Buffer. */
+
+                 int endInputSize,         /* stop when  input has been consumed */
+                 int endOutputSize,        /* stop when output has been consumed */
+
                  int dict,               /* noDict, withPrefix64k, usingExtDict */
                  const BYTE* const lowPrefix,  /* == dest if dict == noDict */
                  const BYTE* const dictStart,  /* only if dict==usingExtDict */
                  const size_t dictSize         /* note : = 0 if noDict */
                  )
 {
+    DBGLVL(1, "%s: endInputSize %d endOutputSize %d dict %d dictSize %zd\n",
+            __FUNCTION__, endInputSize, endOutputSize, dict, dictSize);
     /* Local Variables */
+    status_decompress rc = status_decompress_ok;
+    int inputSize  = *inputSizePtr;
+    int outputSize = *outputSizePtr;
+    *inputSizePtr  = 0;
+    *outputSizePtr = 0;
+
     const BYTE* ip = (const BYTE*) source;
     const BYTE* const iend = ip + inputSize;
 
     BYTE* op = (BYTE*) dest;
     BYTE* const oend = op + outputSize;
     BYTE* cpy;
-    BYTE* oexit = op + targetOutputSize;
+    BYTE* oexit = op + endOutputSize; /* only used if partialDecoding */
     const BYTE* const lowLimit = lowPrefix - dictSize;
+    const BYTE* token_ip;
+    const BYTE* token_op;
 
     const BYTE* const dictEnd = (const BYTE*)dictStart + dictSize;
-    const unsigned dec32table[] = {4, 1, 2, 1, 4, 4, 4, 4};
-    const int dec64table[] = {0, 0, 0, -1, 0, 1, 2, 3};
+    const unsigned dec32table[] = {4, 1, 2,  1, 4, 4, 4, 4};
+    const int      dec64table[] = {0, 0, 0, -1, 0, 1, 2, 3};
 
-    const int safeDecode = (endOnInput==endOnInputSize);
+    const int partialDecoding = (endOutputSize  < outputSize);
+    const int safeDecode      = (            0 !=  inputSize);
+    const int endOnInput      = safeDecode;
     const int checkOffset = ((safeDecode) && (dictSize < (int)(64 KB)));
 
 
     /* Special cases */
     if ((partialDecoding) && (oexit> oend-MFLIMIT)) oexit = oend-MFLIMIT;                         /* targetOutputSize too high => decode everything */
-    if ((endOnInput) && (unlikely(outputSize==0))) return ((inputSize==1) && (*ip==0)) ? 0 : -1;  /* Empty output buffer */
-    if ((!endOnInput) && (unlikely(outputSize==0))) return (*ip==0?1:-1);
+    if ((endInputSize) && (inputSize==0)) return status_decompress_empty_input_buffer;
+    if ( (endOnInput) && (unlikely(outputSize==0))) return ((inputSize==1) && (*ip==0))    ? status_decompress_ok : status_decompress_empty_output_buffer;      /* Empty output buffer */
+    if ((!endOnInput) && (unlikely(outputSize==0))) return ((*ip==0) && (*inputSizePtr=1)) ? status_decompress_ok : status_decompress_empty_output_buffer;      /* Empty output buffer */
 
+    DBGLVL(1, "%s: partialDecoding %d safeDecode %d endOnInput %d checkOffset %d\n",
+            __FUNCTION__, partialDecoding, safeDecode, endOnInput, checkOffset);
 
     /* Main Loop */
     while (1)
@@ -1248,6 +1153,10 @@ FORCE_INLINE int LZ4_decompress_generic(
         size_t length;
         const BYTE* match;
         size_t offset;
+
+        /* mark token position in input (and matching output position) in case of early-end */
+        token_ip = ip;
+        token_op = op;
 
         /* get literal length */
         token = *ip++;
@@ -1260,28 +1169,35 @@ FORCE_INLINE int LZ4_decompress_generic(
                 length += s;
             }
             while ( likely(endOnInput ? ip<iend-RUN_MASK : 1) && (s==255) );
-            if ((safeDecode) && unlikely((size_t)(op+length)<(size_t)(op))) goto _output_error;   /* overflow detection */
-            if ((safeDecode) && unlikely((size_t)(ip+length)<(size_t)(ip))) goto _output_error;   /* overflow detection */
+            /* overflow detection */
+            if ((safeDecode) && unlikely((size_t)(op+length)<(size_t)(op))) { rc = status_decompress_output_overflow; goto _early_end;}
+            if ((safeDecode) && unlikely((size_t)(ip+length)<(size_t)(ip))) { rc = status_decompress_input_overflow ; goto _early_end;}
         }
 
         /* copy literals */
+        DBGLVL(2, "copy literals length %6zd, ", length);
         cpy = op+length;
         if (((endOnInput) && ((cpy>(partialDecoding?oexit:oend-MFLIMIT)) || (ip+length>iend-(2+1+LASTLITERALS))) )
             || ((!endOnInput) && (cpy>oend-WILDCOPYLENGTH)))
         {
             if (partialDecoding)
             {
-                if (cpy > oend) goto _output_error;                           /* Error : write attempt beyond end of output buffer */
-                if ((endOnInput) && (ip+length > iend)) goto _output_error;   /* Error : read attempt beyond end of input buffer */
+                /* Check: write attempt beyond end of output buffer */
+                if (cpy > oend) {rc = status_decompress_write_beyond_output; goto _early_end;}
+                /* Check: read attempt beyond end of input buffer */
+                if ((endOnInput) && (ip+length > iend)) {rc = status_decompress_read_beyond_input; goto _early_end;}
             }
             else
             {
-                if ((!endOnInput) && (cpy != oend)) goto _output_error;       /* Error : block decoding must stop exactly there */
-                if ((endOnInput) && ((ip+length != iend) || (cpy > oend))) goto _output_error;   /* Error : input must be consumed */
+                /* Check: block decoding must stop exactly there */
+                if ((!endOnInput) && (cpy != oend)) {rc = status_decompress_output_not_consumed; DBGLVL(1, "copy literals length %zd oend-cpy %li\n", length, oend-cpy); goto _early_end;}
+                /* Check: input must be consumed */
+                if ((endOnInput) && ((ip+length != iend) || (cpy > oend))) {rc = status_decompress_input_not_consumed; goto _early_end;}
             }
             memcpy(op, ip, length);
             ip += length;
             op += length;
+            DBGLVL(2, "copy last literals %zd\n", length);
             break;     /* Necessarily EOF, due to parsing restrictions */
         }
         LZ4_wildCopy(op, ip, cpy);
@@ -1289,8 +1205,10 @@ FORCE_INLINE int LZ4_decompress_generic(
 
         /* get offset */
         offset = LZ4_readLE16(ip); ip+=2;
+        DBGLVL(2, "get offset %6zd, ", offset);
         match = op - offset;
-        if ((checkOffset) && (unlikely(match < lowLimit))) goto _output_error;   /* Error : offset outside buffers */
+        /* Check: offset outside buffers */
+        if ((checkOffset) && (unlikely(match < lowLimit))) {rc = status_decompress_offset_beyond_limit; goto _output_error;}
 
         /* get matchlength */
         length = token & ML_MASK;
@@ -1299,18 +1217,22 @@ FORCE_INLINE int LZ4_decompress_generic(
             unsigned s;
             do
             {
-                if ((endOnInput) && (ip > iend-LASTLITERALS)) goto _output_error;
+                /* overflow detection */
+                if ((endOnInput) && (ip > iend-LASTLITERALS)) {rc = status_decompress_input_overflow; goto _early_end;}
                 s = *ip++;
                 length += s;
             } while (s==255);
-            if ((safeDecode) && unlikely((size_t)(op+length)<(size_t)op)) goto _output_error;   /* overflow detection */
+            /* overflow detection */
+            if ((safeDecode) && unlikely((size_t)(op+length)<(size_t)op)) {rc = status_decompress_output_overflow; goto _early_end;}
         }
         length += MINMATCH;
+        DBGLVL(2, "get matchlength %6zd, ", length);
 
         /* check external dictionary */
         if ((dict==usingExtDict) && (match < lowPrefix))
         {
-            if (unlikely(op+length > oend-LASTLITERALS)) goto _output_error;   /* doesn't respect parsing restriction */
+            /* Check: respect parsing restriction */
+            if (unlikely(op+length > oend-LASTLITERALS)) {rc = status_decompress_output_ext_match_overflow; goto _early_end;}
 
             if (length <= (size_t)(lowPrefix-match))
             {
@@ -1341,6 +1263,7 @@ FORCE_INLINE int LZ4_decompress_generic(
         }
 
         /* copy match within block */
+        DBGLVL(2, "copy match within block %zd\n", length);
         cpy = op + length;
         if (unlikely(offset<8))
         {
@@ -1358,7 +1281,9 @@ FORCE_INLINE int LZ4_decompress_generic(
         if (unlikely(cpy>oend-12))
         {
             BYTE* const oCopyLimit = oend-(WILDCOPYLENGTH-1);
-            if (cpy > oend-LASTLITERALS) goto _output_error;    /* Error : last LASTLITERALS bytes must be literals (uncompressed) */
+            /* Check: last LASTLITERALS bytes must be literals (uncompressed) */
+            if (cpy > oend-LASTLITERALS) {rc = status_decompress_output_int_match_overflow; DBGLVL(1, "token 0x%02x copy match offset %zd length %zd oend-cpy %li\n", token, offset, length, oend-cpy); goto _early_end;}
+
             if (op < oCopyLimit)
             {
                 LZ4_wildCopy(op, match, oCopyLimit);
@@ -1372,30 +1297,80 @@ FORCE_INLINE int LZ4_decompress_generic(
         op=cpy;   /* correction */
     }
 
-    /* end of decoding */
-    if (endOnInput)
-       return (int) (((char*)op)-dest);     /* Nb of output bytes decoded */
-    else
-       return (int) (((const char*)ip)-source);   /* Nb of input bytes read */
-
-    /* Overflow error detected */
+    /* end of decoding (OK or unrecoverable error) */
+//_decode_end:
 _output_error:
-    return (int) (-(((const char*)ip)-source))-1;
+    *inputSizePtr  = (int) (((const char*)ip)-source);
+    *outputSizePtr = (int) (((char*)op)-dest);
+    return rc;
+
+    /*
+     * Another call with more input data and/or more output space may resolve this
+     * (e.g., if data is split to blocks), as long as we begin at current token and
+     * buffers are large enough on the next call.
+     */
+_early_end:
+    *inputSizePtr  = (int) (((const char*)token_ip)-source);
+    *outputSizePtr = (int) (((const char*)token_op)-dest);
+    return rc;
+}
+
+static int LZ4_decompress_generic(
+                 const char* const source,
+                 char* const dest,
+                 int inputSize,
+                 int outputSize,
+                 int endOnInput,
+                 int partialDecoding,
+                 int targetOutputSize,
+                 int dict,               /* noDict, withPrefix64k, usingExtDict */
+                 const BYTE* const lowPrefix,  /* == dest if dict == noDict */
+                 const BYTE* const dictStart,  /* only if dict==usingExtDict */
+                 const size_t dictSize         /* note : = 0 if noDict */
+        )
+{
+    DBGLVL(1, "%s: inputSize %d outputSize %d endOnInput %d partialDecoding %d targetOutputSize %d dict %d dictSize %zd dest %p lowPrefix %p dictStart %p\n",
+            __FUNCTION__, inputSize, outputSize, endOnInput, partialDecoding, targetOutputSize, dict, dictSize, dest, lowPrefix, dictStart);
+
+    int endInputSize = endOnInput;
+    int endOutputSize = (partialDecoding) ? targetOutputSize : outputSize;
+    int iSize = inputSize;
+    int oSize = outputSize;
+    const status_decompress result = LZ4_decompress_destSize_generic(
+            source, dest, &iSize, &oSize, endInputSize, endOutputSize, dict, lowPrefix, dictStart, dictSize);
+
+    DBGLVL(1, "%s: result %d iSize %d oSize %d\n",
+            __FUNCTION__, result, iSize, oSize);
+
+    if (result == status_decompress_ok) {
+        if (endOnInput)
+            return oSize; /* Nb of output bytes decoded */
+        else
+            return iSize; /* Nb of input bytes read */
+    }
+
+    return -iSize - 1;
 }
 
 
 int LZ4_decompress_safe(const char* source, char* dest, int compressedSize, int maxDecompressedSize)
 {
+    DBGLVL(1, "%s: compressedSize %d maxDecompressedSize %d\n",
+            __FUNCTION__, compressedSize, maxDecompressedSize);
     return LZ4_decompress_generic(source, dest, compressedSize, maxDecompressedSize, endOnInputSize, full, 0, noDict, (BYTE*)dest, NULL, 0);
 }
 
 int LZ4_decompress_safe_partial(const char* source, char* dest, int compressedSize, int targetOutputSize, int maxDecompressedSize)
 {
+    DBGLVL(1, "%s: compressedSize %d targetOutputSize %d maxDecompressedSize %d\n",
+            __FUNCTION__, compressedSize, targetOutputSize, maxDecompressedSize);
     return LZ4_decompress_generic(source, dest, compressedSize, maxDecompressedSize, endOnInputSize, partial, targetOutputSize, noDict, (BYTE*)dest, NULL, 0);
 }
 
 int LZ4_decompress_fast(const char* source, char* dest, int originalSize)
 {
+    DBGLVL(1, "%s: originalSize %d\n",
+            __FUNCTION__, originalSize);
     return LZ4_decompress_generic(source, dest, 0, originalSize, endOnOutputSize, full, 0, withPrefix64k, (BYTE*)(dest - 64 KB), NULL, 64 KB);
 }
 
