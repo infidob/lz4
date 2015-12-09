@@ -29,6 +29,8 @@ env:
   - LZ4_TRAVIS_CI_ENV="-C programs test-fuzzer32"
   - LZ4_TRAVIS_CI_ENV="-C programs test-frametest"
   - LZ4_TRAVIS_CI_ENV="-C programs test-frametest32"
+  - LZ4_TRAVIS_CI_ENV="-C programs test-sgtest"
+  - LZ4_TRAVIS_CI_ENV="-C programs test-sgtest32"
   - LZ4_TRAVIS_CI_ENV="-C programs test-mem"
 
 matrix:

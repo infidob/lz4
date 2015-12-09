@@ -46,6 +46,19 @@ You can contact the author at :
 #endif
 
 
+//#define DEBUG_LEVEL 2
+
+#ifdef DEBUG_LEVEL
+static int s_debug_level = DEBUG_LEVEL;
+
+#include <stdio.h>
+#define DBGLVL(level, ...) do {if (s_debug_level >= level) fprintf(stderr, ## __VA_ARGS__); } while(0)
+
+#else
+#define DBGLVL(...) do {} while(0)
+
+#endif
+
 /**************************************
 *  Memory routines
 **************************************/
@@ -580,6 +593,9 @@ size_t LZ4F_compressUpdate(LZ4F_compressionContext_t compressionContext, void* d
     /* select compression function */
     compress = LZ4F_selectCompression(cctxPtr->prefs.frameInfo.blockMode, cctxPtr->prefs.compressionLevel);
 
+    DBGLVL(1, "\n%d:compUPD srcSize %zu dstMaxSize %zu blockSize %zu  cctxPtr(autoFlush %d, tmpInSize %zu, blockMode %d) stableSrc %d \n", __LINE__,
+            srcSize, dstMaxSize, blockSize, cctxPtr->prefs.autoFlush, cctxPtr->tmpInSize, cctxPtr->prefs.frameInfo.blockMode, compressOptionsPtr->stableSrc);
+
     /* complete tmp buffer */
     if (cctxPtr->tmpInSize > 0)   /* some data already within tmp buffer */
     {
@@ -609,6 +625,7 @@ size_t LZ4F_compressUpdate(LZ4F_compressionContext_t compressionContext, void* d
     while ((size_t)(srcEnd - srcPtr) >= blockSize)
     {
         /* compress full block */
+        DBGLVL(2, "\n%d:compUPD full block <= %d\n", __LINE__, (srcEnd - srcPtr) );
         lastBlockCompressed = fromSrcBuffer;
         dstPtr += LZ4F_compressBlock(dstPtr, srcPtr, blockSize, compress, cctxPtr->lz4CtxPtr, cctxPtr->prefs.compressionLevel);
         srcPtr += blockSize;
@@ -617,6 +634,7 @@ size_t LZ4F_compressUpdate(LZ4F_compressionContext_t compressionContext, void* d
     if ((cctxPtr->prefs.autoFlush) && (srcPtr < srcEnd))
     {
         /* compress remaining input < blockSize */
+        DBGLVL(2, "\n%d:compUPD rem %d\n", __LINE__, (srcEnd - srcPtr) );
         lastBlockCompressed = fromSrcBuffer;
         dstPtr += LZ4F_compressBlock(dstPtr, srcPtr, srcEnd - srcPtr, compress, cctxPtr->lz4CtxPtr, cctxPtr->prefs.compressionLevel);
         srcPtr  = srcEnd;
@@ -632,6 +650,7 @@ size_t LZ4F_compressUpdate(LZ4F_compressionContext_t compressionContext, void* d
         else
         {
             int realDictSize = LZ4F_localSaveDict(cctxPtr);
+            DBGLVL(2, "\n%d:compUPD realDictSize %d\n", __LINE__, realDictSize);
             if (realDictSize==0) return (size_t)-LZ4F_ERROR_GENERIC;
             cctxPtr->tmpIn = cctxPtr->tmpBuff + realDictSize;
         }
@@ -642,6 +661,7 @@ size_t LZ4F_compressUpdate(LZ4F_compressionContext_t compressionContext, void* d
         && !(cctxPtr->prefs.autoFlush))
     {
         int realDictSize = LZ4F_localSaveDict(cctxPtr);
+        DBGLVL(2, "\n%d:compUPD realDictSize %d\n", __LINE__, realDictSize);
         cctxPtr->tmpIn = cctxPtr->tmpBuff + realDictSize;
     }
 
@@ -1058,6 +1078,7 @@ size_t LZ4F_decompress(LZ4F_decompressionContext_t decompressionContext,
     unsigned doAnotherStage = 1;
     size_t nextSrcSizeHint = 1;
 
+    DBGLVL(2, "%s: srcBuffer %p *srcSizePtr %i\n", __FUNCTION__, srcBuffer, (int)*srcSizePtr);
 
     memset(&optionsNull, 0, sizeof(optionsNull));
     if (decompressOptionsPtr==NULL) decompressOptionsPtr = &optionsNull;

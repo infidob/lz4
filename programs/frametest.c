@@ -654,6 +654,7 @@ int fuzzerTests(U32 seed, unsigned nbTests, unsigned startTest, double compressi
 
         if ((FUZ_rand(&randState) & 0xFFF) == 0)
         {
+            DISPLAYLEVEL(3, "skippable frame");
             /* create a skippable frame (rare case) */
             BYTE* op = (BYTE*)compressedBuffer;
             FUZ_writeLE32(op, LZ4F_MAGIC_SKIPPABLE_START + (FUZ_rand(&randState) & 15));
@@ -662,7 +663,10 @@ int fuzzerTests(U32 seed, unsigned nbTests, unsigned startTest, double compressi
         }
         else if ((FUZ_rand(&randState) & 0xF) == 2)
         {
-            cSize = LZ4F_compressFrame(compressedBuffer, LZ4F_compressFrameBound(srcSize, prefsPtr), (char*)srcBuffer + srcStart, srcSize, prefsPtr);
+            size_t dstMaxSize = LZ4F_compressFrameBound(srcSize, prefsPtr);
+            DISPLAYLEVEL(3, "compressFrame srcSize %zu dstMaxSize %zu\n",
+                    srcSize, dstMaxSize);
+            cSize = LZ4F_compressFrame(compressedBuffer, dstMaxSize, (char*)srcBuffer + srcStart, srcSize, prefsPtr);
             CHECK(LZ4F_isError(cSize), "LZ4F_compressFrame failed : error %i (%s)", (int)cSize, LZ4F_getErrorName(cSize));
         }
         else
@@ -684,6 +688,8 @@ int fuzzerTests(U32 seed, unsigned nbTests, unsigned startTest, double compressi
                 if (iSize > (size_t)(iend-ip)) iSize = iend-ip;
                 cOptions.stableSrc = ((FUZ_rand(&randState) & 3) == 1);
 
+                DISPLAYLEVEL(3, "compressUpdate ip %d iSize %zu oSize %zu forceFlush %d\n",
+                        (int)(ip-((const BYTE*)srcBuffer + srcStart)), iSize, oSize, forceFlush);
                 result = LZ4F_compressUpdate(cCtx, op, oSize, ip, iSize, &cOptions);
                 CHECK(LZ4F_isError(result), "Compression failed (error %i)", (int)result);
                 op += result;
@@ -726,7 +732,8 @@ int fuzzerTests(U32 seed, unsigned nbTests, unsigned startTest, double compressi
                 result = LZ4F_decompress(dCtx, op, &oSize, ip, &iSize, &dOptions);
                 if (result == (size_t)-LZ4F_ERROR_contentChecksum_invalid)
                     locateBuffDiff((BYTE*)srcBuffer+srcStart, decodedBuffer, srcSize, nonContiguousDst);
-                CHECK(LZ4F_isError(result), "Decompression failed (error %i:%s)", (int)result, LZ4F_getErrorName((LZ4F_errorCode_t)result));
+                CHECK(LZ4F_isError(result), "Decompression failed (error %i:%s ip %d)",
+                        (int)result, LZ4F_getErrorName((LZ4F_errorCode_t)result), (int)(ip-(const BYTE*)compressedBuffer));
                 XXH64_update(&xxh64, op, (U32)oSize);
                 totalOut += oSize;
                 op += oSize;
