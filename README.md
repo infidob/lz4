@@ -1,90 +1,66 @@
-LZ4 - Extremely fast compression
+LZ4_SG - Scatter Gather LZ4 
 ================================
 
-LZ4 is lossless compression algorithm, 
-providing compression speed at 400 MB/s per core, 
-scalable with multi-cores CPU. 
-It features an extremely fast decoder, 
-with speed in multiple GB/s per core, 
-typically reaching RAM speed limits on multi-core systems.
+LZ4_SG is a scatter-gather variant of the fast compression library LZ4 (by Cyan).
+LZ4_SG links consecutive blocks into a single LZ4F frame compatible with LZ4F 
+(v.1.5.0, i.e., can be decoded by LZ4F_decompress). LZ4_SG avoids copying 
+memory of incompressible blocks, which are stored literally in place.
 
-Speed can be tuned dynamically, selecting an "acceleration" factor
-which trades compression ratio for more speed up.
-On the other end, a high compression derivative, LZ4_HC, is also provided,
-trading CPU time for improved compression ratio.
-All versions feature the same decompression speed.
-
-LZ4 library is provided as open-source software using BSD license.s
-
-
-|Branch      |Status   |
-|------------|---------|
-|master      | [![Build Status][travisMasterBadge]][travisLink] [![Build status][AppveyorMasterBadge]][AppveyorLink] [![coverity][coverBadge]][coverlink] |
-|dev         | [![Build Status][travisDevBadge]][travisLink]    [![Build status][AppveyorDevBadge]][AppveyorLink]                                         |
-
-[travisMasterBadge]: https://travis-ci.org/Cyan4973/lz4.svg?branch=master "Continuous Integration test suite"
-[travisDevBadge]: https://travis-ci.org/Cyan4973/lz4.svg?branch=dev "Continuous Integration test suite"
-[travisLink]: https://ci.appveyor.com/project/YannCollet/lz4
-[AppveyorMasterBadge]: https://ci.appveyor.com/api/projects/status/v6kxv9si529477cq/branch/master?svg=true "Visual test suite"
-[AppveyorDevBadge]: https://ci.appveyor.com/api/projects/status/v6kxv9si529477cq/branch/dev?svg=true "Visual test suite"
-[AppveyorLink]: https://ci.appveyor.com/project/YannCollet/lz4
-[coverBadge]: https://scan.coverity.com/projects/4735/badge.svg "Static code analysis of Master branch"
-[coverlink]: https://scan.coverity.com/projects/4735
-
-> **Branch Policy:**
-
-> - The "master" branch is considered stable, at all times.
-> - The "dev" branch is the one where all contributions must be merged
-    before being promoted to master.
->   + If you plan to propose a patch, please commit into the "dev" branch,
-      or its own feature branch.
-      Direct commit to "master" are not permitted.
+LZ4_SG library is provided as open-source software using BSD license.
 
 Benchmarks
 -------------------------
 
-The benchmark uses the [Open-Source Benchmark program by m^2 (v0.14.3)]
-compiled with GCC v4.8.2 on Linux Mint 64-bits v17.
-The reference system uses a Core i5-4300U @1.9GHz.
+The benchmark program used is based on density's benchmark (by gpnuma
+[Density]), which was extended to support scatter-gather compressors 
+(TODO: fork it and push updates).
+In order to evaluate SG, input buffer is first copied to 4KB buffers. 
+4KB Output buffers are also allocated to accomodate compressed data.
+Decompression uses compressed buffers as input and stores output in the 4KB
+buffers used as input for compression.
+The benchmark program was compiled with GCC 4.8.3 -O3 on centos with kernel 
+2.6.32, and ran on reference system Intel(R) Xeon(R) CPU E5-2697 v3 @ 2.60GHz.
 Benchmark evaluates the compression of reference [Silesia Corpus]
 in single-thread mode.
 
 |  Compressor          | Ratio   | Compression | Decompression |
 |  ----------          | -----   | ----------- | ------------- |
-|  memcpy              |  1.000  | 4200 MB/s   |   4200 MB/s   |
-|**LZ4 fast 17 (r129)**|  1.607  |**690 MB/s** | **2220 MB/s** |
-|**LZ4 default (r129)**|**2.101**|**385 MB/s** | **1850 MB/s** |
-|  LZO 2.06            |  2.108  |  350 MB/s   |    510 MB/s   |
-|  QuickLZ 1.5.1.b6    |  2.238  |  320 MB/s   |    380 MB/s   |
-|  Snappy 1.1.0        |  2.091  |  250 MB/s   |    960 MB/s   |
-|  LZF v3.6            |  2.073  |  175 MB/s   |    500 MB/s   |
-|  zlib 1.2.8 -1       |  2.730  |   59 MB/s   |    250 MB/s   |
-|**LZ4 HC (r129)**     |**2.720**|   22 MB/s   | **1830 MB/s** |
-|  zlib 1.2.8 -6       |  3.099  |   18 MB/s   |    270 MB/s   |
+|  LZ4                 | 47.64%  |  502 MB/s   |   2297 MB/s   |
+|  LZ4'                | 47.64%  |  481 MB/s   |   2011 MB/s   |
+|  LZ4+dual_memcpy     | 47.64%  |  470 MB/s   |   1863 MB/s   |
+|**LZ4_SG**            | 49.01%  |  440 MB/s   |   2013 MB/s   |
 
+dual_memcpy reference point corresponds to copying scattered input blocks to a
+contiguous buffer, applying compression to another contiguous buffer, and then
+copying results to scattered output blocks.
+LZ4' is the modified version of LZ4 that supports SG, but is applied to
+contiguous input and output buffers.
+
+Multi-core benchmark results (8 concurrent runs in terminal):
+
+|  Compressor          | Ratio   | Compression | Decompression |
+|  ----------          | -----   | ----------- | ------------- |
+|  LZ4'                | 47.64%  |  480 MB/s   |   1700 MB/s   |
+|  LZ4+dual_memcpy     | 47.64%  |  470 MB/s   |   1490 MB/s   |
+|**LZ4_SG**            | 49.01%  |  440 MB/s   |   1550 MB/s   |
+
+
+Limitations
+-------------------------
+Decompress buffers should be same size as original buffers containing plain-text.
+That is, buffer lengths used as source,target for compression can be safely used 
+as target,source for decompression.
+
+Known Issues
+-------------------------
+LZ4_SG_compressBound (used to verify sufficient memory for output before 
+compression) is not tight with extremely small buffers lengths (e.g., 16 bytes). 
 
 Documentation
 -------------------------
 
-The raw LZ4 block compression format is detailed within [lz4_Block_format].
+See lib/lz4sg.h for usage details (basically, similar to vectored I/O iovec).
 
-To compress an arbitrarily long file or data stream, multiple blocks are required.
-Organizing these blocks and providing a common header format to handle their content
-is the purpose of the Frame format, defined into [lz4_Frame_format].
-Interoperable versions of LZ4 must respect this frame format.
-
-
-Other source versions
--------------------------
-
-Beyond the C reference source, 
-many contributors have created versions of lz4 in multiple languages
-(Java, C#, Python, Perl, Ruby, etc.).
-A list of known source ports is maintained on the [LZ4 Homepage].
-
-
-[Open-Source Benchmark program by m^2 (v0.14.3)]: http://encode.ru/threads/1371-Filesystem-benchmark?p=34029&viewfull=1#post34029
 [Silesia Corpus]: http://sun.aei.polsl.pl/~sdeor/index.php?page=silesia
-[lz4_Block_format]: lz4_Block_format.md
-[lz4_Frame_format]: lz4_Frame_format.md
 [LZ4 Homepage]: http://www.lz4.org
+[Density]: https://github.com/centaurean/density

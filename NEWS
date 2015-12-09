@@ -1,3 +1,8 @@
+New: Scatter-Gather interface and implementation, by Ido Ben-Tsion (with help by Cyan, based on _destSize), improves decompression over memcpy by 10%
+Changed: Merge LZ4_compress_destSize with generic (-5% compress speed, -12% decompress speed, simplified testing SG version)
+
+lz4sg fork point
+
 r132
 Improved: Small decompression speed boost (+4%)
 Improved: Performance on ARMv6 and ARMv7
