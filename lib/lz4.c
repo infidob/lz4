@@ -586,6 +586,7 @@ FORCE_INLINE int LZ4_compress_generic(
             unsigned searchMatchNb = acceleration << LZ4_skipTrigger;
 
             /* Find a match */
+_find_a_match:
             do {
                 U32 h = forwardH;
                 ip = forwardIp;
@@ -624,8 +625,10 @@ FORCE_INLINE int LZ4_compress_generic(
                         (int) (((const char*)lowRefLimit)-source), dictIssue, tableType, refDelta);
 
             } while ( ((dictIssue==dictSmall) ? (match < lowRefLimit) : 0)
-                || ((tableType==byU16) ? 0 : ((match + MAX_DISTANCE < ip) || (match >= ip)))
+                || ((tableType==byU16) ? 0 : (match + MAX_DISTANCE < ip))
                 || (LZ4_read32(match+refDelta) != LZ4_read32(ip)) );
+            /* if out of scope due to window overflow - skip and find another match */
+            if ((dict != noDict) && unlikely(match >= ip)) goto _find_a_match;
         }
 
         /* Catch up */
@@ -749,8 +752,9 @@ _next_match:
 
         LZ4_putPosition(ip, ctx, tableType, base);
         if ( ((dictIssue==dictSmall) ? (match>=lowRefLimit) : 1)
-            && ((match+MAX_DISTANCE>=ip) && (match < ip))
-            && (LZ4_read32(match+refDelta)==LZ4_read32(ip)) )
+            && (match+MAX_DISTANCE>=ip)
+            && (LZ4_read32(match+refDelta)==LZ4_read32(ip))
+            && ((dict != noDict) ? (match < ip) : 1))
         { token=op++; *token=0; goto _next_match; }
 
         /* Prepare next loop */
