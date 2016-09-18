@@ -286,7 +286,7 @@ static int LZ4_SG_compressEnd(
     const LZ4SG_out_t *sgo = sg_out;
     const LZ4SG_out_t *sgoend = sg_out + sg_out_len;
     void *endMarkPtr = NULL;
-    int pos = 0;
+    size_t pos = 0;
     while (sgo != sgoend) {
         size_t next_pos = pos + sgo->sg_len;
         if (next_pos > out_position) {
@@ -307,7 +307,7 @@ static int LZ4_SG_compressEnd(
 
     // check overlap of end mark
     // can we write end-mark directly? or should we split it with next buffer?
-    int cur_buf_rem = (BYTE *)sgo->sg_base + sgo->sg_len - (BYTE *)endMarkPtr;
+    int cur_buf_rem = (int)((BYTE *)sgo->sg_base + sgo->sg_len - (BYTE *)endMarkPtr);
     if ((int)frameEndSize <= cur_buf_rem) {
         memset(endMarkPtr, 0, frameEndSize);
     }
@@ -344,7 +344,7 @@ static int LZ4_SG_compressEnd(
         (void)LZ4_SG_compressBegin(sg_out->sg_base, contentSizeActual, max_block_size);
     }
 
-    return out_position + 4;
+    return (int)(out_position + 4);
 }
 
 size_t LZ4_SG_compressBound(size_t sourceSize, size_t sg_in_len, size_t sg_out_len)
@@ -364,7 +364,7 @@ size_t LZ4_SG_compressBound(size_t sourceSize, size_t sg_in_len, size_t sg_out_l
     //
     //  The following approximation is simpler, and probably good enough (for expected use
     // cases, i.e., non-trivial buffers)
-    size_t one_buffer_length = LZ4_compressBound(sourceSize / sg_in_len);
+    size_t one_buffer_length = LZ4_compressBound((int)(sourceSize / sg_in_len));
     size_t min_buffer_list_len = (sg_in_len > sg_out_len) ? sg_out_len : sg_in_len;
     size_t patch_too_few_zero_paddings = 1;
     size_t zero_padding_blocks = (patch_too_few_zero_paddings + min_buffer_list_len) * (1+BHSize);
@@ -384,15 +384,15 @@ size_t LZ4_SG_compressBound(size_t sourceSize, size_t sg_in_len, size_t sg_out_l
 
 static int LZ4_compress_fast_sg_extState (
         void* state,
-        const LZ4SG_in_t * sg_in , int sg_in_len ,
-        const LZ4SG_out_t* sg_out, int sg_out_len,
+        const LZ4SG_in_t * sg_in , size_t sg_in_len ,
+        const LZ4SG_out_t* sg_out, size_t sg_out_len,
         size_t out_skip_size,
         size_t* sourceSizePtr,
         size_t* maxOutBlockSizePtr,
         size_t maxDestSize,
         int acceleration)
 {
-    const int sourceSize = *sourceSizePtr;
+    const int sourceSize = (int)*sourceSizePtr;
     *sourceSizePtr = 0;
 
     const LZ4SG_in_t  *sgiend = sg_in  + sg_in_len ;
@@ -402,8 +402,8 @@ static int LZ4_compress_fast_sg_extState (
     // input assumptions (verify?):
     // sourceSize  is equal to or smaller than the sum of  input buffer lengths
     // maxDestSize is equal to or smaller than the sum of output buffer lengths
-    if (sg_in_len  <= 0) return -1;
-    if (sg_out_len <= 0) return -2;
+    if (sg_in_len  == 0) return -1;
+    if (sg_out_len == 0) return -2;
 
     for (const LZ4SG_in_t  *sgi_ = sg_in ; sgi_ != sgiend; sgi_++)
         if (unlikely((sgi_->sg_len < 1) || (sgi_->sg_len > 4 MB))) {
@@ -418,7 +418,7 @@ static int LZ4_compress_fast_sg_extState (
 
     int max_out_block_size = 0;
     int ipos = 0;
-    int opos = out_skip_size;
+    int opos = (int)out_skip_size;
     int total_processed_input  = ipos;
     int total_processed_output = opos;
 
@@ -429,16 +429,16 @@ static int LZ4_compress_fast_sg_extState (
         // mark and skip block size position
         const char* source = ((const char*)sgi->sg_base) + ipos;
               char*   dest = ((char*)sgo->sg_base) + opos;
-        void *oBS = dest;
+        BYTE *oBS = (BYTE*)dest;
 
         dest += BHSize;
         opos += BHSize;
         total_processed_output += BHSize;
 
         const int irem =  sourceSize - total_processed_input ;
-        const int orem = maxDestSize - total_processed_output;
-        int iSize = sgi->sg_len - ipos;
-        int oSize = sgo->sg_len - opos;
+        const int orem = (int)maxDestSize - total_processed_output;
+        int iSize = (int)sgi->sg_len - ipos;
+        int oSize = (int)sgo->sg_len - opos;
         if (unlikely(irem < iSize)) iSize = irem;
         if (unlikely(orem < oSize)) oSize = orem;
 
@@ -535,8 +535,8 @@ _end_cleanup:
 
 static int LZ4_decompress_fast_sg_extState (
         void* state,
-        const LZ4SG_in_t * sg_in , int sg_in_len ,
-        const LZ4SG_out_t* sg_out, int sg_out_len,
+        const LZ4SG_in_t * sg_in , size_t sg_in_len ,
+        const LZ4SG_out_t* sg_out, size_t sg_out_len,
         size_t in_skip_size,
         int compressedSize,
         int originalSize)
@@ -550,15 +550,15 @@ static int LZ4_decompress_fast_sg_extState (
     // input assumptions (verify?):
     // sourceSize  is equal to or smaller than the sum of  input buffer lengths
     // maxDestSize is equal to or smaller than the sum of output buffer lengths
-    if (sg_in_len  <= 0) return -1;
-    if (sg_out_len <= 0) return -2;
+    if (sg_in_len  == 0) return -1;
+    if (sg_out_len == 0) return -2;
 
     for (const LZ4SG_in_t  *sgi_ = sg_in ; sgi_ != sgiend; sgi_++)
         if (unlikely(sgi_->sg_len < 2)) return -3;
     for (const LZ4SG_out_t *sgo_ = sg_out; sgo_ != sgoend; sgo_++)
         if (unlikely(sgo_->sg_len < 1)) return -4;
 
-    int ipos = in_skip_size;
+    int ipos = (int)in_skip_size;
     int opos = 0;
     int total_processed_input  = ipos;
     int total_processed_output = opos;
@@ -587,8 +587,8 @@ _next_compressed_block:
 
         irem = compressedSize - total_processed_input;
         orem =   originalSize - total_processed_output;
-        int iSize = sgi->sg_len - ipos;
-        int oSize = sgo->sg_len - opos;
+        int iSize = (int)sgi->sg_len - ipos;
+        int oSize = (int)sgo->sg_len - opos;
         if (unlikely(irem < iSize)) iSize = irem;
         if (unlikely(orem < oSize)) oSize = orem;
 
@@ -713,7 +713,7 @@ int LZ4_SG_compress (
     }
 
     // write frame header with content size
-    int result = LZ4_SG_compressBegin(sg_out->sg_base, contentSize, 64 KB);
+    int result = (int)LZ4_SG_compressBegin(sg_out->sg_base, contentSize, 64 KB);
     if (unlikely(result < (int)frameHeaderSize)) {
         DBGLVL(1, "Unsupported arguments (%i)\n", result);
         *sourceSizePtr = 0;
@@ -798,7 +798,7 @@ int LZ4_SG_decompress (
             sg_in , sg_in_len ,
             sg_out, sg_out_len,
             in_skip_size,
-            compressedSize, originalSize);
+            (int)compressedSize, (int)originalSize);
 #if (HEAPMODE)
     FREEMEM(ctx);
 #endif
