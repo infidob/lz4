@@ -843,7 +843,9 @@ int fuzzerTests(U32 seed, unsigned nbTests, unsigned startTest, double compressi
                 if (sg_cout[i].sg_len <= max_buf_size) {
                     // enough room to copy - do it
                     sg_din[i].sg_base = sg_in_buf_potential[i*2+0].sg_base;
-                    memcpy((void *)sg_din[i].sg_base, sg_cout[i].sg_base, sg_cout[i].sg_len);
+                    if (sg_din[i].sg_base != sg_cout[i].sg_base) {
+                        memcpy((void *)sg_din[i].sg_base, sg_cout[i].sg_base, sg_cout[i].sg_len);
+                    }
                 }
                 else {
                     // this is probably single output buffer - skip copy, use directly
