@@ -915,7 +915,9 @@ int fuzzerTests(U32 seed, unsigned nbTests, unsigned startTest, double compressi
                 size_t buf_size_bytes = cSize - total_copied;
                 if (buf_size_bytes == 0) break;
                 if (buf_size_bytes > sg_cout[i].sg_len) buf_size_bytes = sg_cout[i].sg_len;
-                memcpy(((char *)compressedBuffer)+total_copied, sg_cout[i].sg_base, buf_size_bytes);
+                if (((char *)compressedBuffer)+total_copied != sg_cout[i].sg_base) {
+                    memcpy(((char *)compressedBuffer)+total_copied, sg_cout[i].sg_base, buf_size_bytes);
+                }
                 total_copied += buf_size_bytes;
             }
 
